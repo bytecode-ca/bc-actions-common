@@ -1,0 +1,65 @@
+name: 'Generate App Version'
+description: 'Generate application version from branch name, package.json, or build.gradle'
+
+inputs:
+  build-name:
+    description: 'Build environment name (e.g., dev, prod)'
+    required: false
+    default: 'dev'
+
+outputs:
+  version:
+    description: 'Generated version string'
+    value: ${{ steps.generate.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate version
+      id: generate
+      shell: bash
+      run: |
+        #!/bin/bash
+        
+        echo "Executing app version generation..."
+        
+        BUILD_NAME="${{ inputs.build-name }}"
+        DEFAULT_VERSION="0.0.0"
+        VERSION=""
+        
+        # Extract version from branch name (e.g., release/v1.0.0)
+        BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+        echo "Branch name: $BRANCH_NAME"
+        
+        # Regular expression to match version number pattern 'vX.X.X'
+        if [[ $BRANCH_NAME =~ v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+          VERSION="${BASH_REMATCH[1]}"
+          echo "Version extracted from branch name: $VERSION"
+        fi
+        
+        # If version not found in branch, check package.json or build.gradle
+        if [ -z "$VERSION" ]; then
+          echo "Version not found in branch name. Checking package.json or build.gradle..."
+          
+          if [ -f "package.json" ]; then
+            echo "package.json found. Extracting version..."
+            VERSION=$(cat package.json | grep -oP '(?<="version": ")[^"]*' || echo "$DEFAULT_VERSION")
+          elif [ -f "build.gradle" ]; then
+            echo "build.gradle found. Extracting version..."
+            VERSION=$(grep -oP 'version\s*=\s*["'"'"']([^"'"'"']+)["'"'"']' build.gradle | grep -oP '["'"'"']\K[^"'"'"']+' || echo "$DEFAULT_VERSION")
+          else
+            echo "Neither package.json nor build.gradle found. Using default version."
+            VERSION="$DEFAULT_VERSION"
+          fi
+        fi
+        
+        # Append commit SHA and build details
+        SHORT_SHA="${GITHUB_SHA:0:7}"
+        SHORT_DATE=$(date +%Y%m%d)
+        BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+        
+        FULL_VERSION="${VERSION}-${BUILD_NAME}-${SHORT_SHA}-${SHORT_DATE}-${BUILD_NUMBER}"
+        
+        # e.g., 1.0.0-prod-b6e7480-20240323-7
+        echo "Final version: $FULL_VERSION"
+        echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT

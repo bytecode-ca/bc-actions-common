@@ -1,0 +1,34 @@
+name: 'Generate Common Version'
+description: 'Generate a simple common version string in format: <short-sha>-<date>-<build-number>'
+
+outputs:
+  version:
+    description: 'Generated version string (e.g., f54de42-20260207-5)'
+    value: ${{ steps.generate.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate version
+      id: generate
+      shell: bash
+      run: |
+        #!/bin/bash
+        
+        echo "Generating common version..."
+        
+        # Get short commit SHA (7 characters)
+        SHORT_SHA="${GITHUB_SHA:0:7}"
+        
+        # Get current date in YYYYMMDD format
+        SHORT_DATE=$(date +%Y%m%d)
+        
+        # Get build number from GitHub Actions
+        BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+        
+        # Generate version: <short-sha>-<date>-<build-number>
+        VERSION="${SHORT_SHA}-${SHORT_DATE}-${BUILD_NUMBER}"
+        
+        # e.g., f54de42-20260207-5
+        echo "Generated version: $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT

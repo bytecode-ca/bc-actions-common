@@ -1,0 +1,180 @@
+name: React Build and Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment (prod or stg)'
+        required: true
+        type: string
+      minio_bucket:
+        description: 'MinIO bucket name for deployment'
+        required: true
+        type: string
+      runs_on:
+        description: 'Runner label'
+        required: false
+        type: string
+        default: 'self-hosted'
+      node_version_file:
+        description: 'Node version file'
+        required: false
+        type: string
+        default: '.nvmrc'
+      dist_folder:
+        description: 'Build output folder'
+        required: false
+        type: string
+        default: 'dist'
+      minio_endpoint:
+        description: 'MinIO server endpoint'
+        required: false
+        type: string
+        default: 'http://10.20.0.121:9000'
+      vault_addr:
+        description: 'Vault server address'
+        required: false
+        type: string
+        default: 'http://10.20.0.123:8200'
+      vault_secret_path:
+        description: 'Vault secret path'
+        required: false
+        type: string
+        default: 'secret/data/github/credentials'
+    secrets:
+      VAULT_ROLE_ID:
+        description: 'Vault AppRole role ID'
+        required: false
+      VAULT_SECRET_ID:
+        description: 'Vault AppRole secret ID'
+        required: false
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy to ${{ inputs.environment }}
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 15
+    
+    env:
+      MINIO_ENDPOINT: ${{ inputs.minio_endpoint }}
+      MINIO_BUCKET: ${{ inputs.minio_bucket }}
+      VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID || '60ddcafc-3ed1-34be-099b-929dc69e0e37' }}
+      VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID || '3d6b06b6-1a41-4563-0fca-7b9f361ef5a4' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Import secrets from Vault
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ inputs.vault_addr }}
+          method: approle
+          roleId: ${{ env.VAULT_ROLE_ID }}
+          secretId: ${{ env.VAULT_SECRET_ID }}
+          secrets: |
+            ${{ inputs.vault_secret_path }} minio_access_key | MINIO_ACCESS_KEY ;
+            ${{ inputs.vault_secret_path }} minio_secret_key | MINIO_SECRET_KEY ;
+            ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ${{ inputs.node_version_file }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build:${{ inputs.environment }}
+
+      - name: Install MinIO client
+        run: |
+          if ! command -v mc &> /dev/null; then
+            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc
+            chmod +x /tmp/mc
+            sudo mv /tmp/mc /usr/local/bin/mc
+          fi
+
+      - name: Deploy to MinIO
+        run: |
+          mc alias set minio $MINIO_ENDPOINT $MINIO_ACCESS_KEY $MINIO_SECRET_KEY
+          mc mb --ignore-existing minio/$MINIO_BUCKET
+          mc anonymous set download minio/$MINIO_BUCKET
+          mc rm --recursive --force minio/$MINIO_BUCKET/ || true
+          mc cp --recursive ${{ inputs.dist_folder }}/ minio/$MINIO_BUCKET/
+
+      - name: Summary
+        run: |
+          echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bucket | \`${{ inputs.minio_bucket }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Slack - Success
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {"type": "plain_text", "text": "🚀 ${{ github.event.repository.name }} - Deploy Successful", "emoji": true}
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
+                    {"type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}"},
+                    {"type": "mrkdwn", "text": "*Environment:*\n${{ inputs.environment }}"},
+                    {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {"type": "mrkdwn", "text": "*Bucket:*\n\`${{ inputs.minio_bucket }}\`"}
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "View Run", "emoji": true}, "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                  ]
+                }
+              ]
+            }' \
+            $SLACK_WEBHOOK_URL
+
+      - name: Slack - Failure
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {"type": "plain_text", "text": "🔴 ${{ github.event.repository.name }} - Deploy Failed", "emoji": true}
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
+                    {"type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}"},
+                    {"type": "mrkdwn", "text": "*Environment:*\n${{ inputs.environment }}"},
+                    {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {"type": "button", "text": {"type": "plain_text", "text": "View Logs", "emoji": true}, "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                  ]
+                }
+              ]
+            }' \
+            $SLACK_WEBHOOK_URL

@@ -34,6 +34,9 @@ on:
                 type: string
                 default: 'secret/data/github/credentials'
         secrets:
+            VAULT_ROLE_ID:
+                description: 'Vault AppRole role ID'
+                required: false
             VAULT_SECRET_ID:
                 description: 'Vault AppRole secret ID'
                 required: false
@@ -42,7 +45,8 @@ env:
     APP_NAME: ${{ inputs.app_name || github.event.repository.name }}
     DOCKER_REGISTRY: ${{ inputs.docker_registry }}
     VAULT_ADDR: ${{ inputs.vault_addr }}
-    VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID || 'c3c21c65-a9a1-cd3d-f1b2-4dee2e207aad' }}
+    VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID || '60ddcafc-3ed1-34be-099b-929dc69e0e37' }}
+    VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID || '3d6b06b6-1a41-4563-0fca-7b9f361ef5a4' }}
 
 jobs:
     publish:
@@ -61,7 +65,7 @@ jobs:
                 with:
                     url: ${{ env.VAULT_ADDR }}
                     method: approle
-                    roleId: github-actions-role
+                    roleId: ${{ env.VAULT_ROLE_ID }}
                     secretId: ${{ env.VAULT_SECRET_ID }}
                     secrets: |
                         ${{ inputs.vault_secret_path }} docker_username | DOCKER_USERNAME ;

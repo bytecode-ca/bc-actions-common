@@ -1,0 +1,157 @@
+name: Build and Publish
+
+on:
+    workflow_call:
+        inputs:
+            app_name:
+                description: 'Application name (defaults to repository name)'
+                required: false
+                type: string
+                default: ''
+            docker_registry:
+                description: 'Docker registry URL'
+                required: false
+                type: string
+                default: '10.20.0.102:5000'
+            runs_on:
+                description: 'Runner label'
+                required: false
+                type: string
+                default: 't630'
+            timeout_minutes:
+                description: 'Job timeout in minutes'
+                required: false
+                type: number
+                default: 15
+            vault_addr:
+                description: 'Vault server address'
+                required: false
+                type: string
+                default: 'http://10.20.0.123:8200'
+            vault_secret_path:
+                description: 'Vault secret path for credentials'
+                required: false
+                type: string
+                default: 'secret/data/github/credentials'
+        secrets:
+            VAULT_SECRET_ID:
+                description: 'Vault AppRole secret ID'
+                required: false
+
+env:
+    APP_NAME: ${{ inputs.app_name || github.event.repository.name }}
+    DOCKER_REGISTRY: ${{ inputs.docker_registry }}
+    VAULT_ADDR: ${{ inputs.vault_addr }}
+    VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID || 'c3c21c65-a9a1-cd3d-f1b2-4dee2e207aad' }}
+
+jobs:
+    publish:
+        name: Build and Publish
+        runs-on: ${{ inputs.runs_on }}
+        timeout-minutes: ${{ inputs.timeout_minutes }}
+
+        steps:
+            -   name: Checkout
+                uses: actions/checkout@v4
+                with:
+                    fetch-depth: 0
+
+            -   name: Import Secrets from Vault
+                uses: hashicorp/vault-action@v3
+                with:
+                    url: ${{ env.VAULT_ADDR }}
+                    method: approle
+                    roleId: github-actions-role
+                    secretId: ${{ env.VAULT_SECRET_ID }}
+                    secrets: |
+                        ${{ inputs.vault_secret_path }} docker_username | DOCKER_USERNAME ;
+                        ${{ inputs.vault_secret_path }} docker_password | DOCKER_PASSWORD ;
+                        ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL
+
+            -   name: Generate version
+                id: version
+                uses: bytecode-ca/bc-actions-common/common-version@main
+
+            -   name: Build JAR
+                run: ./gradlew clean build -x test --no-daemon
+
+            -   name: Docker login
+                run: echo "${{ env.DOCKER_PASSWORD }}" | docker login ${{ env.DOCKER_REGISTRY }} -u ${{ env.DOCKER_USERNAME }} --password-stdin
+
+            -   name: Build & push image
+                env:
+                    IMAGE: ${{ env.DOCKER_REGISTRY }}/${{ env.APP_NAME }}:${{ steps.version.outputs.version }}
+                run: |
+                    docker build -f Dockerfile.prebuilt --build-arg APP_VERSION=${{ steps.version.outputs.version }} -t $IMAGE .
+                    docker push $IMAGE
+
+            -   name: Summary
+                run: |
+                    echo "## ✅ Build Successful" >> $GITHUB_STEP_SUMMARY
+                    echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+                    echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+                    echo "| Version | \`${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+                    echo "| Image | \`${{ env.DOCKER_REGISTRY }}/${{ env.APP_NAME }}:${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+
+            -   name: Slack - Success
+                if: success()
+                run: |
+                    curl -X POST -H 'Content-type: application/json' \
+                        --data '{
+                            "blocks": [
+                                {
+                                    "type": "header",
+                                    "text": {"type": "plain_text", "text": "🚀 ${{ env.APP_NAME }} - Build Successful", "emoji": true}
+                                },
+                                {
+                                    "type": "section",
+                                    "fields": [
+                                        {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
+                                        {"type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}"},
+                                        {"type": "mrkdwn", "text": "*Version:*\n${{ steps.version.outputs.version }}"},
+                                        {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
+                                    ]
+                                },
+                                {
+                                    "type": "section",
+                                    "text": {"type": "mrkdwn", "text": "*Image:*\n`${{ env.DOCKER_REGISTRY }}/${{ env.APP_NAME }}:${{ steps.version.outputs.version }}`"}
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {"type": "button", "text": {"type": "plain_text", "text": "View Run", "emoji": true}, "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                                    ]
+                                }
+                            ]
+                        }' \
+                        ${{ env.SLACK_WEBHOOK_URL }}
+
+            -   name: Slack - Failure
+                if: failure()
+                run: |
+                    curl -X POST -H 'Content-type: application/json' \
+                        --data '{
+                            "blocks": [
+                                {
+                                    "type": "header",
+                                    "text": {"type": "plain_text", "text": "🔴 ${{ env.APP_NAME }} - Build Failed", "emoji": true}
+                                },
+                                {
+                                    "type": "section",
+                                    "fields": [
+                                        {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
+                                        {"type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}"},
+                                        {"type": "mrkdwn", "text": "*Commit:*\n`${{ github.sha }}`"},
+                                        {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
+                                    ]
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {"type": "button", "text": {"type": "plain_text", "text": "View Logs", "emoji": true}, "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                                    ]
+                                }
+                            ]
+                        }' \
+                        ${{ env.SLACK_WEBHOOK_URL }}
+

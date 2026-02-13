@@ -95,9 +95,10 @@ jobs:
       - name: Install MinIO client
         run: |
           if ! command -v mc &> /dev/null; then
-            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc
-            chmod +x /tmp/mc
-            sudo mv /tmp/mc /usr/local/bin/mc
+            mkdir -p $HOME/.local/bin
+            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o $HOME/.local/bin/mc
+            chmod +x $HOME/.local/bin/mc
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
           fi
 
       - name: Deploy to MinIO

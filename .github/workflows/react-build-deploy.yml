@@ -96,7 +96,11 @@ jobs:
         run: |
           if ! command -v mc &> /dev/null; then
             mkdir -p $HOME/.local/bin
-            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o $HOME/.local/bin/mc
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+              curl -fsSL https://dl.min.io/client/mc/release/darwin-amd64/mc -o $HOME/.local/bin/mc
+            else
+              curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o $HOME/.local/bin/mc
+            fi
             chmod +x $HOME/.local/bin/mc
             echo "$HOME/.local/bin" >> $GITHUB_PATH
           fi

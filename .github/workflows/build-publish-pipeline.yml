@@ -118,10 +118,7 @@ jobs:
                                 },
                                 {
                                     "type": "section",
-                                    "fields": [
-                                        {"type": "mrkdwn", "text": "*Docker Host:*\n`${{ env.DOCKER_REGISTRY }}`"},
-                                        {"type": "mrkdwn", "text": "*Image:*\n`${{ env.APP_NAME }}:${{ steps.version.outputs.version }}`"}
-                                    ]
+                                    "text": {"type": "mrkdwn", "text": "*Image:*\n`${{ env.DOCKER_REGISTRY }}/${{ env.APP_NAME }}:${{ steps.version.outputs.version }}`"}
                                 },
                                 {
                                     "type": "actions",

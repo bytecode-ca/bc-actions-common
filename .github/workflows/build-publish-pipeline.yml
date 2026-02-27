@@ -33,6 +33,26 @@ on:
                 required: false
                 type: string
                 default: 'secret/data/github/credentials'
+            vault_kubeconfig_path:
+                description: 'Vault path for kubeconfig'
+                required: false
+                type: string
+                default: 'secret/data/bc-apps/kubeconfig'
+            k8s_namespace:
+                description: 'Kubernetes namespace'
+                required: false
+                type: string
+                default: 'default'
+            k8s_deployment:
+                description: 'Kubernetes deployment name (defaults to app_name)'
+                required: false
+                type: string
+                default: ''
+            k8s_container:
+                description: 'Kubernetes container name (defaults to app_name)'
+                required: false
+                type: string
+                default: ''
         secrets:
             VAULT_ROLE_ID:
                 description: 'Vault AppRole role ID'
@@ -44,9 +64,10 @@ on:
 env:
     APP_NAME: ${{ inputs.app_name || github.event.repository.name }}
     DOCKER_REGISTRY: ${{ inputs.docker_registry }}
-    VAULT_ADDR: ${{ inputs.vault_addr }}
     VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID || '60ddcafc-3ed1-34be-099b-929dc69e0e37' }}
     VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID || '3d6b06b6-1a41-4563-0fca-7b9f361ef5a4' }}
+    K8S_DEPLOYMENT: ${{ inputs.k8s_deployment || inputs.app_name || github.event.repository.name }}
+    K8S_CONTAINER: ${{ inputs.k8s_container || inputs.app_name || github.event.repository.name }}
 
 jobs:
     publish:
@@ -63,14 +84,15 @@ jobs:
             -   name: Import Secrets from Vault
                 uses: hashicorp/vault-action@v3
                 with:
-                    url: ${{ env.VAULT_ADDR }}
+                    url: ${{ inputs.vault_addr }}
                     method: approle
                     roleId: ${{ env.VAULT_ROLE_ID }}
                     secretId: ${{ env.VAULT_SECRET_ID }}
                     secrets: |
                         ${{ inputs.vault_secret_path }} docker_username | DOCKER_USERNAME ;
                         ${{ inputs.vault_secret_path }} docker_password | DOCKER_PASSWORD ;
-                        ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL
+                        ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL ;
+                        ${{ inputs.vault_kubeconfig_path }} kubeconfig | KUBECONFIG_DATA
 
             -   name: Generate version
                 id: version
@@ -88,6 +110,16 @@ jobs:
                 run: |
                     docker build -f Dockerfile.prebuilt --build-arg APP_VERSION=${{ steps.version.outputs.version }} -t $IMAGE .
                     docker push $IMAGE
+
+            -   name: Update Kubernetes deployment
+                run: |
+                    mkdir -p $HOME/.kube
+                    echo "${{ env.KUBECONFIG_DATA }}" > $HOME/.kube/config
+                    chmod 600 $HOME/.kube/config
+                    kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} \
+                        ${{ env.K8S_CONTAINER }}=${{ env.DOCKER_REGISTRY }}/${{ env.APP_NAME }}:${{ steps.version.outputs.version }} \
+                        -n ${{ inputs.k8s_namespace }}
+                    kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ inputs.k8s_namespace }} --timeout=120s
 
             -   name: Summary
                 run: |
@@ -158,4 +190,3 @@ jobs:
                             ]
                         }' \
                         ${{ env.SLACK_WEBHOOK_URL }}
-

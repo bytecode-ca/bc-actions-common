@@ -100,6 +100,7 @@ jobs:
                     DATE=$(date +%Y%m%d)
                     VERSION="${SHORT_SHA}-${DATE}-${{ github.run_number }}"
                     echo "version=${VERSION}" >> $GITHUB_OUTPUT
+                    echo "${VERSION}" > ${{ inputs.dist_folder }}/version.txt
 
             -   name: Create artifact archive
                 run: tar -czf ${{ steps.version.outputs.version }}.tar.gz ${{ inputs.dist_folder }}/

@@ -102,7 +102,7 @@ jobs:
                     echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
             -   name: Create artifact archive
-                run: tar -czf build-${{ steps.version.outputs.version }}.tar.gz ${{ inputs.dist_folder }}/
+                run: tar -czf ${{ steps.version.outputs.version }}.tar.gz ${{ inputs.dist_folder }}/
 
             -   name: Install MinIO client
                 run: |
@@ -122,7 +122,7 @@ jobs:
                     mc alias set minio ${{ env.MINIO_ENDPOINT }} ${{ env.MINIO_ACCESS_KEY }} ${{ env.MINIO_SECRET_KEY }}
                     # Upload versioned artifact
                     mc mb --ignore-existing minio/artifacts
-                    mc cp build-${{ steps.version.outputs.version }}.tar.gz minio/artifacts/${{ env.APP_NAME }}/
+                    mc cp ${{ steps.version.outputs.version }}.tar.gz minio/artifacts/${{ env.APP_NAME }}/
                     # Deploy to bucket
                     mc mb --ignore-existing minio/${{ env.MINIO_BUCKET }}
                     mc anonymous set download minio/${{ env.MINIO_BUCKET }}

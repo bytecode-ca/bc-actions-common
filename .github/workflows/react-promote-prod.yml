@@ -1,0 +1,162 @@
+name: React Promote to Prod
+
+on:
+    workflow_call:
+        inputs:
+            version:
+                description: 'Version to promote (e.g. abc1234-20260226-42)'
+                required: true
+                type: string
+            bucket:
+                description: 'MinIO prod bucket name'
+                required: true
+                type: string
+            runs_on:
+                description: 'Runner label'
+                required: false
+                type: string
+                default: 'self-hosted'
+            dist_folder:
+                description: 'Build output folder (must match what was archived)'
+                required: false
+                type: string
+                default: 'dist'
+            minio_endpoint:
+                description: 'MinIO server endpoint'
+                required: false
+                type: string
+                default: 'http://10.20.0.121:9000'
+            vault_addr:
+                description: 'Vault server address'
+                required: false
+                type: string
+                default: 'http://10.20.0.123:8200'
+            vault_secret_path:
+                description: 'Vault secret path'
+                required: false
+                type: string
+                default: 'secret/data/github/credentials'
+        secrets:
+            VAULT_ROLE_ID:
+                description: 'Vault AppRole role ID'
+                required: false
+            VAULT_SECRET_ID:
+                description: 'Vault AppRole secret ID'
+                required: false
+
+env:
+    APP_NAME: ${{ github.event.repository.name }}
+    MINIO_ENDPOINT: ${{ inputs.minio_endpoint }}
+    MINIO_BUCKET: ${{ inputs.bucket }}
+    VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID || '60ddcafc-3ed1-34be-099b-929dc69e0e37' }}
+    VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID || '3d6b06b6-1a41-4563-0fca-7b9f361ef5a4' }}
+
+jobs:
+    promote:
+        name: Promote to Prod
+        runs-on: ${{ inputs.runs_on }}
+        timeout-minutes: 15
+
+        steps:
+            -   name: Import Secrets from Vault
+                uses: hashicorp/vault-action@v3
+                with:
+                    url: ${{ inputs.vault_addr }}
+                    method: approle
+                    roleId: ${{ env.VAULT_ROLE_ID }}
+                    secretId: ${{ env.VAULT_SECRET_ID }}
+                    secrets: |
+                        ${{ inputs.vault_secret_path }} minio_access_key | MINIO_ACCESS_KEY ;
+                        ${{ inputs.vault_secret_path }} minio_secret_key | MINIO_SECRET_KEY ;
+                        ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL
+
+            -   name: Install MinIO client
+                run: |
+                    if ! command -v mc &> /dev/null; then
+                      mkdir -p $HOME/.local/bin
+                      if [[ "$OSTYPE" == "darwin"* ]]; then
+                        curl -fsSL https://dl.min.io/client/mc/release/darwin-amd64/mc -o $HOME/.local/bin/mc
+                      else
+                        curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o $HOME/.local/bin/mc
+                      fi
+                      chmod +x $HOME/.local/bin/mc
+                      echo "$HOME/.local/bin" >> $GITHUB_PATH
+                    fi
+
+            -   name: Promote prod artifact to bucket
+                run: |
+                    mc alias set minio ${{ env.MINIO_ENDPOINT }} ${{ env.MINIO_ACCESS_KEY }} ${{ env.MINIO_SECRET_KEY }}
+                    # Download prod artifact
+                    mc cp minio/artifacts/${{ env.APP_NAME }}/prod/${{ inputs.version }}.tar.gz .
+                    # Extract and deploy to prod bucket
+                    tar -xzf ${{ inputs.version }}.tar.gz
+                    mc mb --ignore-existing minio/${{ env.MINIO_BUCKET }}
+                    mc anonymous set download minio/${{ env.MINIO_BUCKET }}
+                    mc rm --recursive --force minio/${{ env.MINIO_BUCKET }}/ || true
+                    mc cp --recursive ${{ inputs.dist_folder }}/ minio/${{ env.MINIO_BUCKET }}/
+
+            -   name: Summary
+                run: |
+                    echo "## ✅ Promoted to Prod" >> $GITHUB_STEP_SUMMARY
+                    echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+                    echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+                    echo "| Version | \`${{ inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+                    echo "| Prod Bucket | \`${{ env.MINIO_BUCKET }}\` |" >> $GITHUB_STEP_SUMMARY
+                    echo "| Triggered by | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
+
+            -   name: Slack - Success
+                if: success()
+                run: |
+                    curl -X POST -H 'Content-type: application/json' \
+                        --data '{
+                            "blocks": [
+                                {
+                                    "type": "header",
+                                    "text": {"type": "plain_text", "text": "🚀 ${{ env.APP_NAME }} - Promoted to Prod", "emoji": true}
+                                },
+                                {
+                                    "type": "section",
+                                    "fields": [
+                                        {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
+                                        {"type": "mrkdwn", "text": "*Version:*\n${{ inputs.version }}"},
+                                        {"type": "mrkdwn", "text": "*Bucket:*\n${{ env.MINIO_BUCKET }}"},
+                                        {"type": "mrkdwn", "text": "*Promoted by:*\n${{ github.actor }}"}
+                                    ]
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {"type": "button", "text": {"type": "plain_text", "text": "View Run", "emoji": true}, "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                                    ]
+                                }
+                            ]
+                        }' \
+                        ${{ env.SLACK_WEBHOOK_URL }}
+
+            -   name: Slack - Failure
+                if: failure()
+                run: |
+                    curl -X POST -H 'Content-type: application/json' \
+                        --data '{
+                            "blocks": [
+                                {
+                                    "type": "header",
+                                    "text": {"type": "plain_text", "text": "🔴 ${{ env.APP_NAME }} - Prod Promotion Failed", "emoji": true}
+                                },
+                                {
+                                    "type": "section",
+                                    "fields": [
+                                        {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
+                                        {"type": "mrkdwn", "text": "*Version:*\n${{ inputs.version }}"},
+                                        {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
+                                    ]
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {"type": "button", "text": {"type": "plain_text", "text": "View Logs", "emoji": true}, "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                                    ]
+                                }
+                            ]
+                        }' \
+                        ${{ env.SLACK_WEBHOOK_URL }}

@@ -3,10 +3,6 @@ name: React Build and Deploy
 on:
     workflow_call:
         inputs:
-            environment:
-                description: 'Deployment environment (prod or stg)'
-                required: true
-                type: string
             bucket:
                 description: 'MinIO bucket name for deployment'
                 required: true
@@ -57,8 +53,152 @@ env:
     VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID || '3d6b06b6-1a41-4563-0fca-7b9f361ef5a4' }}
 
 jobs:
-    deploy:
-        name: Build and Deploy to ${{ inputs.environment }}
+    deploy-stg:
+        name: Build and Deploy Stg
+        runs-on: ${{ inputs.runs_on }}
+        timeout-minutes: 15
+        outputs:
+            version: ${{ steps.version.outputs.version }}
+
+        steps:
+            -   name: Checkout
+                uses: actions/checkout@v4
+
+            -   name: Import Secrets from Vault
+                uses: hashicorp/vault-action@v3
+                with:
+                    url: ${{ inputs.vault_addr }}
+                    method: approle
+                    roleId: ${{ env.VAULT_ROLE_ID }}
+                    secretId: ${{ env.VAULT_SECRET_ID }}
+                    secrets: |
+                        ${{ inputs.vault_secret_path }} minio_access_key | MINIO_ACCESS_KEY ;
+                        ${{ inputs.vault_secret_path }} minio_secret_key | MINIO_SECRET_KEY ;
+                        ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL
+
+            -   name: Setup pnpm
+                uses: pnpm/action-setup@v4
+
+            -   name: Setup Node.js
+                uses: actions/setup-node@v4
+                with:
+                    node-version-file: ${{ inputs.node_version_file }}
+                    cache: pnpm
+
+            -   name: Install dependencies
+                run: pnpm install --frozen-lockfile
+
+            -   name: Generate version
+                id: version
+                run: |
+                    SHORT_SHA=$(git rev-parse --short=7 HEAD)
+                    DATE=$(date +%Y%m%d)
+                    VERSION="${SHORT_SHA}-${DATE}-${{ github.run_number }}"
+                    echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+            -   name: Build stg
+                run: pnpm build:stg
+
+            -   name: Archive stg artifact
+                run: |
+                    echo "${{ steps.version.outputs.version }}" > ${{ inputs.dist_folder }}/version.txt
+                    tar -czf ${{ steps.version.outputs.version }}-stg.tar.gz ${{ inputs.dist_folder }}/
+
+            -   name: Install MinIO client
+                run: |
+                    if ! command -v mc &> /dev/null; then
+                      mkdir -p $HOME/.local/bin
+                      if [[ "$OSTYPE" == "darwin"* ]]; then
+                        curl -fsSL https://dl.min.io/client/mc/release/darwin-amd64/mc -o $HOME/.local/bin/mc
+                      else
+                        curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o $HOME/.local/bin/mc
+                      fi
+                      chmod +x $HOME/.local/bin/mc
+                      echo "$HOME/.local/bin" >> $GITHUB_PATH
+                    fi
+
+            -   name: Deploy stg to MinIO
+                run: |
+                    mc alias set minio ${{ env.MINIO_ENDPOINT }} ${{ env.MINIO_ACCESS_KEY }} ${{ env.MINIO_SECRET_KEY }}
+                    # Store stg artifact
+                    mc mb --ignore-existing minio/artifacts
+                    mc cp ${{ steps.version.outputs.version }}-stg.tar.gz minio/artifacts/${{ env.APP_NAME }}/stg/${{ steps.version.outputs.version }}.tar.gz
+                    # Deploy stg to bucket
+                    mc mb --ignore-existing minio/${{ env.MINIO_BUCKET }}
+                    mc anonymous set download minio/${{ env.MINIO_BUCKET }}
+                    mc rm --recursive --force minio/${{ env.MINIO_BUCKET }}/ || true
+                    mc cp --recursive ${{ inputs.dist_folder }}/ minio/${{ env.MINIO_BUCKET }}/
+
+            -   name: Summary
+                run: |
+                    echo "## ✅ Stg Deployed" >> $GITHUB_STEP_SUMMARY
+                    echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+                    echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+                    echo "| Version | \`${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+                    echo "| Stg Bucket | \`${{ env.MINIO_BUCKET }}\` |" >> $GITHUB_STEP_SUMMARY
+                    echo "| Stg Artifact | \`artifacts/${{ env.APP_NAME }}/stg/${{ steps.version.outputs.version }}.tar.gz\` |" >> $GITHUB_STEP_SUMMARY
+
+            -   name: Slack - Stg Deployed
+                if: success()
+                run: |
+                    curl -X POST -H 'Content-type: application/json' \
+                        --data '{
+                            "blocks": [
+                                {
+                                    "type": "header",
+                                    "text": {"type": "plain_text", "text": "🚀 ${{ env.APP_NAME }} - Stg Deployed", "emoji": true}
+                                },
+                                {
+                                    "type": "section",
+                                    "fields": [
+                                        {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
+                                        {"type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}"},
+                                        {"type": "mrkdwn", "text": "*Version:*\n${{ steps.version.outputs.version }}"},
+                                        {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
+                                    ]
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {"type": "button", "text": {"type": "plain_text", "text": "View Run", "emoji": true}, "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                                    ]
+                                }
+                            ]
+                        }' \
+                        ${{ env.SLACK_WEBHOOK_URL }}
+
+            -   name: Slack - Stg Failed
+                if: failure()
+                run: |
+                    curl -X POST -H 'Content-type: application/json' \
+                        --data '{
+                            "blocks": [
+                                {
+                                    "type": "header",
+                                    "text": {"type": "plain_text", "text": "🔴 ${{ env.APP_NAME }} - Stg Deploy Failed", "emoji": true}
+                                },
+                                {
+                                    "type": "section",
+                                    "fields": [
+                                        {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
+                                        {"type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}"},
+                                        {"type": "mrkdwn", "text": "*Commit:*\n`${{ github.sha }}`"},
+                                        {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
+                                    ]
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {"type": "button", "text": {"type": "plain_text", "text": "View Logs", "emoji": true}, "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+                                    ]
+                                }
+                            ]
+                        }' \
+                        ${{ env.SLACK_WEBHOOK_URL }}
+
+    store-prod:
+        name: Build and Store Prod Artifact
+        needs: deploy-stg
         runs-on: ${{ inputs.runs_on }}
         timeout-minutes: 15
 
@@ -90,20 +230,13 @@ jobs:
             -   name: Install dependencies
                 run: pnpm install --frozen-lockfile
 
-            -   name: Build
-                run: pnpm build:${{ inputs.environment }}
+            -   name: Build prod
+                run: pnpm build:prod
 
-            -   name: Generate version
-                id: version
+            -   name: Archive prod artifact
                 run: |
-                    SHORT_SHA=$(git rev-parse --short=7 HEAD)
-                    DATE=$(date +%Y%m%d)
-                    VERSION="${SHORT_SHA}-${DATE}-${{ github.run_number }}"
-                    echo "version=${VERSION}" >> $GITHUB_OUTPUT
-                    echo "${VERSION}" > ${{ inputs.dist_folder }}/version.txt
-
-            -   name: Create artifact archive
-                run: tar -czf ${{ steps.version.outputs.version }}.tar.gz ${{ inputs.dist_folder }}/
+                    echo "${{ needs.deploy-stg.outputs.version }}" > ${{ inputs.dist_folder }}/version.txt
+                    tar -czf ${{ needs.deploy-stg.outputs.version }}-prod.tar.gz ${{ inputs.dist_folder }}/
 
             -   name: Install MinIO client
                 run: |
@@ -118,28 +251,21 @@ jobs:
                       echo "$HOME/.local/bin" >> $GITHUB_PATH
                     fi
 
-            -   name: Deploy to MinIO
+            -   name: Store prod artifact to MinIO
                 run: |
                     mc alias set minio ${{ env.MINIO_ENDPOINT }} ${{ env.MINIO_ACCESS_KEY }} ${{ env.MINIO_SECRET_KEY }}
-                    # Upload versioned artifact
                     mc mb --ignore-existing minio/artifacts
-                    mc cp ${{ steps.version.outputs.version }}.tar.gz minio/artifacts/${{ env.APP_NAME }}/
-                    # Deploy to bucket
-                    mc mb --ignore-existing minio/${{ env.MINIO_BUCKET }}
-                    mc anonymous set download minio/${{ env.MINIO_BUCKET }}
-                    mc rm --recursive --force minio/${{ env.MINIO_BUCKET }}/ || true
-                    mc cp --recursive ${{ inputs.dist_folder }}/ minio/${{ env.MINIO_BUCKET }}/
+                    mc cp ${{ needs.deploy-stg.outputs.version }}-prod.tar.gz minio/artifacts/${{ env.APP_NAME }}/prod/${{ needs.deploy-stg.outputs.version }}.tar.gz
 
             -   name: Summary
                 run: |
-                    echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
+                    echo "## ✅ Prod Artifact Stored" >> $GITHUB_STEP_SUMMARY
                     echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
                     echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-                    echo "| Version | \`${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
-                    echo "| Environment | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
-                    echo "| Bucket | \`${{ env.MINIO_BUCKET }}\` |" >> $GITHUB_STEP_SUMMARY
+                    echo "| Version | \`${{ needs.deploy-stg.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+                    echo "| Prod Artifact | \`artifacts/${{ env.APP_NAME }}/prod/${{ needs.deploy-stg.outputs.version }}.tar.gz\` |" >> $GITHUB_STEP_SUMMARY
 
-            -   name: Slack - Success
+            -   name: Slack - Prod Artifact Stored
                 if: success()
                 run: |
                     curl -X POST -H 'Content-type: application/json' \
@@ -147,20 +273,16 @@ jobs:
                             "blocks": [
                                 {
                                     "type": "header",
-                                    "text": {"type": "plain_text", "text": "🚀 ${{ env.APP_NAME }} - Deploy Successful", "emoji": true}
+                                    "text": {"type": "plain_text", "text": "📦 ${{ env.APP_NAME }} - Prod Artifact Ready", "emoji": true}
                                 },
                                 {
                                     "type": "section",
                                     "fields": [
                                         {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
-                                        {"type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}"},
-                                        {"type": "mrkdwn", "text": "*Version:*\n${{ steps.version.outputs.version }}"},
+                                        {"type": "mrkdwn", "text": "*Version:*\n${{ needs.deploy-stg.outputs.version }}"},
+                                        {"type": "mrkdwn", "text": "*Artifact:*\nartifacts/${{ env.APP_NAME }}/prod/${{ needs.deploy-stg.outputs.version }}.tar.gz"},
                                         {"type": "mrkdwn", "text": "*Triggered by:*\n${{ github.actor }}"}
                                     ]
-                                },
-                                {
-                                    "type": "section",
-                                    "text": {"type": "mrkdwn", "text": "*Bucket:*\n`${{ env.MINIO_BUCKET }}`"}
                                 },
                                 {
                                     "type": "actions",
@@ -172,7 +294,7 @@ jobs:
                         }' \
                         ${{ env.SLACK_WEBHOOK_URL }}
 
-            -   name: Slack - Failure
+            -   name: Slack - Prod Build Failed
                 if: failure()
                 run: |
                     curl -X POST -H 'Content-type: application/json' \
@@ -180,7 +302,7 @@ jobs:
                             "blocks": [
                                 {
                                     "type": "header",
-                                    "text": {"type": "plain_text", "text": "🔴 ${{ env.APP_NAME }} - Deploy Failed", "emoji": true}
+                                    "text": {"type": "plain_text", "text": "🔴 ${{ env.APP_NAME }} - Prod Build Failed", "emoji": true}
                                 },
                                 {
                                     "type": "section",

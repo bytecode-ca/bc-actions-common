@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/shams/dev/apps/bc-apps/bc-actions-common status)",
+      "Bash(git -C /Users/shams/dev/apps/bc-apps/bc-actions-common log --oneline -3)",
+      "Bash(git -C /Users/shams/dev/apps/bc-apps/bc-auth-web status)",
+      "Bash(git -C /Users/shams/dev/apps/bc-apps/bc-app-web status)",
+      "Bash(git -C /Users/shams/dev/apps/bc-apps/bc-auth-api status)",
+      "Bash(git add .github/workflows/react-build-deploy.yml .github/workflows/docker-promote-prod.yml .github/workflows/react-promote-prod.yml)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

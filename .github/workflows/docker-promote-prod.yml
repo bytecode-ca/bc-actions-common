@@ -68,9 +68,6 @@ jobs:
                         ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL ;
                         ${{ inputs.vault_secret_path }} infra_repo_token | INFRA_REPO_TOKEN
 
-            -   name: Install yq
-                run: sudo snap install yq
-
             -   name: Update image tag in bc-k8s
                 run: |
                     git clone --branch main https://x-access-token:${{ env.INFRA_REPO_TOKEN }}@github.com/bytecode-ca/bc-k8s.git

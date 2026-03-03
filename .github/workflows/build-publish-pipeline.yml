@@ -100,10 +100,6 @@ jobs:
                     docker build -f Dockerfile.prebuilt --build-arg APP_VERSION=${{ steps.version.outputs.version }} -t $IMAGE .
                     docker push $IMAGE
 
-            -   name: Install yq
-                if: inputs.deploy
-                run: sudo snap install yq
-
             -   name: Update image tag in bc-k8s
                 if: inputs.deploy
                 run: |

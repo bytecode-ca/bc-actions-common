@@ -92,6 +92,8 @@ jobs:
                         ${{ inputs.vault_secret_path }} docker_username | DOCKER_USERNAME ;
                         ${{ inputs.vault_secret_path }} docker_password | DOCKER_PASSWORD ;
                         ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL ;
+                        ${{ inputs.vault_secret_path }} nexus_user | NEXUS_USER ;
+                        ${{ inputs.vault_secret_path }} nexus_pass | NEXUS_PASS ;
                         ${{ inputs.vault_kubeconfig_path }} kubeconfig | KUBECONFIG_DATA
 
             -   name: Generate version
@@ -99,7 +101,11 @@ jobs:
                 uses: bytecode-ca/bc-actions-common/common-version@main
 
             -   name: Build JAR
-                run: ./gradlew clean build -x test --no-daemon
+                run: |
+                    ORG_GRADLE_PROJECT_nexusUrl='http://10.20.0.102:8081/repository/maven-releases/' \
+                    ORG_GRADLE_PROJECT_nexusUser="$NEXUS_USER" \
+                    ORG_GRADLE_PROJECT_nexusPass="$NEXUS_PASS" \
+                    ./gradlew clean build -x test --no-daemon
 
             -   name: Docker login
                 run: echo "${{ env.DOCKER_PASSWORD }}" | docker login ${{ env.DOCKER_REGISTRY }} -u ${{ env.DOCKER_USERNAME }} --password-stdin

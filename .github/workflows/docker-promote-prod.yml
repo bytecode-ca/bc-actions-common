@@ -37,26 +37,6 @@ on:
                 required: false
                 type: string
                 default: 'secret/data/github/credentials'
-            vault_kubeconfig_path:
-                description: 'Vault path for kubeconfig'
-                required: false
-                type: string
-                default: 'secret/data/bc-apps/kubeconfig'
-            k8s_namespace:
-                description: 'Kubernetes prod namespace'
-                required: false
-                type: string
-                default: 'bc-prod'
-            k8s_deployment:
-                description: 'Kubernetes deployment name (defaults to app_name)'
-                required: false
-                type: string
-                default: ''
-            k8s_container:
-                description: 'Kubernetes container name (defaults to app_name)'
-                required: false
-                type: string
-                default: ''
         secrets:
             VAULT_ROLE_ID:
                 description: 'Vault AppRole role ID'
@@ -64,14 +44,11 @@ on:
             VAULT_SECRET_ID:
                 description: 'Vault AppRole secret ID'
                 required: false
-
 env:
     APP_NAME: ${{ inputs.app_name || github.event.repository.name }}
     DOCKER_REGISTRY: ${{ inputs.docker_registry }}
     VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID || '60ddcafc-3ed1-34be-099b-929dc69e0e37' }}
     VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID || '3d6b06b6-1a41-4563-0fca-7b9f361ef5a4' }}
-    K8S_DEPLOYMENT: ${{ inputs.k8s_deployment || inputs.app_name || github.event.repository.name }}
-    K8S_CONTAINER: ${{ inputs.k8s_container || inputs.app_name || github.event.repository.name }}
 
 jobs:
     promote:
@@ -89,17 +66,23 @@ jobs:
                     secretId: ${{ env.VAULT_SECRET_ID }}
                     secrets: |
                         ${{ inputs.vault_secret_path }} slack_webhook_url | SLACK_WEBHOOK_URL ;
-                        ${{ inputs.vault_kubeconfig_path }} kubeconfig | KUBECONFIG_DATA
+                        ${{ inputs.vault_secret_path }} infra_repo_token | INFRA_REPO_TOKEN
 
-            -   name: Update Kubernetes prod deployment
+            -   name: Install yq
+                run: sudo snap install yq
+
+            -   name: Update image tag in bc-k8s
                 run: |
-                    mkdir -p $HOME/.kube
-                    echo "${{ env.KUBECONFIG_DATA }}" > $HOME/.kube/config
-                    chmod 600 $HOME/.kube/config
-                    kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} \
-                        ${{ env.K8S_CONTAINER }}=${{ env.DOCKER_REGISTRY }}/${{ env.APP_NAME }}:${{ inputs.version }} \
-                        -n ${{ inputs.k8s_namespace }}
-                    kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ inputs.k8s_namespace }} --timeout=120s
+                    git clone --branch main https://x-access-token:${{ env.INFRA_REPO_TOKEN }}@github.com/bytecode-ca/bc-k8s.git
+                    cd bc-k8s
+                    git config user.name "github-actions"
+                    git config user.email "actions@github.com"
+
+                    yq e -i '.${{ env.APP_NAME }}.image.tag = "${{ inputs.version }}"' bc-apps/values-prod.yaml
+
+                    git add .
+                    git commit -m "${{ env.APP_NAME }}: promote to ${{ inputs.version }}" || echo "No changes"
+                    git push
 
             -   name: Summary
                 run: |
@@ -108,7 +91,6 @@ jobs:
                     echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
                     echo "| Version | \`${{ inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
                     echo "| Image | \`${{ env.DOCKER_REGISTRY }}/${{ env.APP_NAME }}:${{ inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
-                    echo "| Namespace | \`${{ inputs.k8s_namespace }}\` |" >> $GITHUB_STEP_SUMMARY
                     echo "| Triggered by | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
 
             -   name: Slack - Success
@@ -126,7 +108,6 @@ jobs:
                                     "fields": [
                                         {"type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}"},
                                         {"type": "mrkdwn", "text": "*Version:*\n${{ inputs.version }}"},
-                                        {"type": "mrkdwn", "text": "*Namespace:*\n${{ inputs.k8s_namespace }}"},
                                         {"type": "mrkdwn", "text": "*Promoted by:*\n${{ github.actor }}"}
                                     ]
                                 },

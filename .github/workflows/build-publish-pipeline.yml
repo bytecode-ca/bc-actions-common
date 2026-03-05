@@ -88,7 +88,7 @@ jobs:
                     ORG_GRADLE_PROJECT_nexusUrl='http://10.20.0.102:8081/repository/maven-public/' \
                     ORG_GRADLE_PROJECT_nexusUser="$NEXUS_USER" \
                     ORG_GRADLE_PROJECT_nexusPass="$NEXUS_PASS" \
-                    ./gradlew clean build -x test --no-daemon
+                    ./gradlew clean build -x test --no-daemon --refresh-dependencies
 
             -   name: Docker login
                 run: echo "${{ env.DOCKER_PASSWORD }}" | docker login ${{ env.DOCKER_REGISTRY }} -u ${{ env.DOCKER_USERNAME }} --password-stdin

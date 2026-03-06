@@ -111,7 +111,7 @@ jobs:
                     yq e -i '.${{ env.APP_NAME }}.image.tag = "${{ steps.version.outputs.version }}"' bc-apps/values-stg.yaml
 
                     git add .
-                    git commit -m "${{ env.APP_NAME }}: update image to ${{ steps.version.outputs.version }}" || echo "No changes"
+                    git commit -m "deploy(stg): ${{ env.APP_NAME }} → ${{ steps.version.outputs.version }}" || echo "No changes"
                     git push
 
             -   name: Summary
